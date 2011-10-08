@@ -12,7 +12,7 @@ MISSING_CDG = {}
 begin
   undo_file = File.new('undo.sh', 'w')
 
-  undo_file.puts <<-"HELP"
+  undo_file.puts <<-"HELP".gsub(/^\s+/, '')
   # You can use this file to revert the changes made by #{__FILE__}
   HELP
 
@@ -26,68 +26,66 @@ begin
           squeeze('_').          # squish multiple underscores
           gsub(/^[^A-Za-z0-9'$(\[]+/, '').  # Remove extra crap from the start
           gsub(/[^A-Za-z0-9'.$!)\]]+$/, '') # Remove extra crap from the end
-        end
+  end
 
   files = Dir.glob('**/*.*')
-  filenames = files.group_by {|filename| /([^\/]+)\..+?$/.match(filename)[1] }
+  filenames = files.group_by {|filename| %r<^(.+)\..+?$>.match(filename)[1] }
 
   puts "Found #{files.length} files representing #{filenames.length} unique titles.\n"
 
   max_name_length = filenames.keys.collect(&:length).max
 
   filenames.each_pair do |name, files|
-    # show which name we're looking at
-    print "#{files.length}x: '#{name}.*' -> "
+    dir = File.dirname(files.first) # grab the directory from one of the files
+    files = Hash[files.collect { |f| [File.extname(f).downcase.delete('.').to_sym, f] }]
 
-    cdg_files = files.select{|f| f =~ /.*\.cdg/i }
-    if cdg_files.empty? then
-      MISSING_CDG[name] = files
+    # show which name we're looking at
+    print "#{files.count}x: '#{name}.*' -> "
+
+    unless files.has_key? :cdg then
+      MISSING_CDG[name] = files.values
       puts "Error - see below..."
       next
     end
 
-    mp3_files = files.select{|f| f =~ /.*\.mp3/i }
-    if mp3_files.empty? then
-      MISSING_MP3[name] = files
+    unless files.has_key? :mp3 then
+      MISSING_MP3[name] = files.values
     else
-      tags = ID3Lib::Tag.new(mp3_files.first)
+      tags = ID3Lib::Tag.new(files[:mp3])
 
       # Grab the ID3 tag info (artist / title)
       new_name = clean_title("#{tags.artist.split( %r(\s*/\s*) ).join('; ')} - #{tags.title}")
 
-      # rename the files, but only if new_name is set and is different than the original title
-      if ( not new_name.empty? ) and new_name != name then
-        dup_counter = nil
-        naming_conflict = nil # nil to signify that we don't know
+      dup_counter = nil
+      naming_conflict = true # set true so we enter the while loop
 
-        # Check for naming conflicts for all files together
-        until naming_conflict == false do
-          # use a .0, .1, .2 ... suffix when there are naming conflicts
-          conflicts = files.collect do |f|
-            ext = File.extname(f).delete('.')
-            dir = File.dirname(f)
+      # Check for naming conflicts for all files together, glean a dup_counter that we'll append to the filename in cases where we have conflicts
+      while naming_conflict do
+        # use a .0, .1, .2 ... suffix when there are naming conflicts
+        naming_conflict = nil
+        files.each_pair do |ext, f|
+          new_f = File.join(dir, [new_name, dup_counter, ext.to_s].compact.join("."))
 
-            File.exists?(new_f = File.join(dir, [new_name, dup_counter, ext].compact.join(".") ))
-          end
-
-          naming_conflict = conflicts.include?(true) and dup_counter = dup_counter.nil? ? 0 : (dup_counter + 1)
+          # only check for conflicts if this isn't the present name of the file...
+          naming_conflict = true if new_f != f and File.exists?(new_f)
         end
 
-        print "'#{[new_name, dup_counter].compact.join('.')}' ..."
+        dup_counter = dup_counter.nil? ? 0 : (dup_counter + 1) if naming_conflict
+      end
 
-        # Perform the renames
-        files.each do |f|
-          ext = File.extname(f).delete('.')
-          dir = File.dirname(f)
+      print "'#{[new_name, dup_counter].compact.join('.')}' ..."
 
-          new_f = File.join(dir, [new_name, dup_counter, ext].compact.join(".") )
+      # Perform the renames
+      files.each_pair do |ext, f|
+        new_f = File.join(dir, [new_name, dup_counter, ext.to_s].compact.join(".") )
+        if new_f != f then
           raise RuntimeError, "WTF!" if File.exists?(new_f)
 
           # write this change to the undo script
-          undo_file.puts %(mv -v "#{new_f}" "#{f}")
+          #undo_file.puts %(mv -v "#{new_f}" "#{f}")
 
           File.rename(f, new_f)
-          print " #{ext}"
+          print " #{ext.to_s}"
         end
       end
     end
